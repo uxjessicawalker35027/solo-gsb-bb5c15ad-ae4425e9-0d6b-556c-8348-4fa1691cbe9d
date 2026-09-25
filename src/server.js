@@ -20,6 +20,7 @@ const {
 } = require('./procure');
 const { planDualSpeed, MIN_GEARS: MIN_DUAL_GEARS } = require('./dual');
 const { planTorque, validateTorqueGears, parsePositiveInt, MAX_TORQUE } = require('./torque');
+const { planLayout, parseAxes, parseModule } = require('./layout');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -45,6 +46,11 @@ app.get('/dual-speed', (_req, res) => {
 /** 友好访问带载安全选配页：/torque → /torque.html */
 app.get('/torque', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'torque.html'));
+});
+
+/** 友好访问轴位装配页：/layout → /layout.html */
+app.get('/layout', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'layout.html'));
 });
 
 /** BigInt 分数安全转为有限小数（用于前端展示） */
@@ -107,6 +113,20 @@ function serializeTorqueSolution(r) {
       driven: serializeTorqueGear(p.driven),
       stageRatio: serializeFrac(p.stageRatio),
     })),
+  };
+}
+
+/** 轴位装配最佳方案：逐级与逐轴明细中的分数统一序列化 */
+function serializeLayoutBest(best) {
+  return {
+    ratio: serializeFrac(best.ratio),
+    error: serializeFrac(best.error),
+    errorPercent: fracToDecimal({ num: best.error.num * 100n, den: best.error.den }, 6),
+    stages: best.stages.map((s) => ({
+      ...s,
+      stageRatio: serializeFrac(s.stageRatio),
+    })),
+    axes: best.axes,
   };
 }
 
@@ -458,6 +478,91 @@ app.post('/api/torque', (req, res) => {
   });
 });
 
+app.post('/api/layout', (req, res) => {
+  const body = req.body || {};
+
+  // 轴心坐标：2～4 个沿直线依次排列的整数
+  const parsedAxes = parseAxes(body.axes);
+  if (!parsedAxes.ok) return res.status(400).json({ error: parsedAxes.error });
+  const axes = parsedAxes.axes;
+
+  // 模数：正整数
+  const parsedModule = parseModule(body.module);
+  if (!parsedModule.ok) return res.status(400).json({ error: parsedModule.error });
+  const module = parsedModule.value;
+
+  const target = parseTarget(String(body.target ?? ''));
+  if (!target) {
+    return res.status(400).json({ error: '目标输出转速比格式不正确：请输入正数（如 0.0833、1/12）' });
+  }
+
+  const tolerance = parseTolerance(String(body.tolerance ?? ''));
+  if (!tolerance) {
+    return res.status(400).json({ error: '允许相对误差格式不正确：请输入非负数（如 0.05 或 5%）' });
+  }
+
+  // 现有齿轮：2～12 枚，沿用单台选配的校验规则
+  const checked = validateGears(body.gears);
+  if (!checked.ok) return res.status(400).json({ error: checked.error });
+
+  // 先按级枚举满足 2×轴距 = 模数×(主动齿数+从动齿数) 的有向配对，
+  // 再在不复用齿轮下完整组合（不截断），精确分数校核总速比
+  const plan = planLayout(checked.gears, axes, module, target, tolerance);
+
+  const base = {
+    axes,
+    module,
+    stages: plan.stages,
+    distances: plan.distances,
+    teethSums: plan.teethSums,
+    stagePairCounts: plan.stagePairCounts,
+    target: serializeFrac(target),
+    tolerance: serializeFrac(tolerance),
+    assemblyCount: plan.assemblyCount,
+    total: plan.total,
+  };
+
+  // 区分“无可啮合装配”与“可装配但速比不达标”
+  if (plan.assemblyCount === 0) {
+    const emptyStages = plan.stagePairCounts
+      .map((c, i) => (c === 0 ? i + 1 : null))
+      .filter((x) => x !== null);
+    const detail =
+      emptyStages.length > 0
+        ? `第 ${emptyStages.join('、')} 级（轴距 ${emptyStages
+            .map((s) => plan.distances[s - 1])
+            .join('、')}）没有任何满足 2×轴距 = 模数×(主动齿数+从动齿数) 的齿轮对`
+        : '各级虽分别存在可啮合配对，但无法在每枚齿轮只用一次的前提下同时装齐';
+    return res.json({
+      ...base,
+      feasible: false,
+      reason: 'no-assembly',
+      best: null,
+      message: `无可啮合装配：${detail}。可调整轴心坐标、模数或增删齿轮后重试。`,
+    });
+  }
+
+  if (plan.total === 0) {
+    return res.json({
+      ...base,
+      feasible: false,
+      reason: 'ratio',
+      best: null,
+      message:
+        `可装配但速比不达标：共有 ${plan.assemblyCount} 种可啮合装配` +
+        '（每级满足轴距、每枚齿轮只用一次），但全部实际总速比的相对误差均超出允许范围。' +
+        '可尝试放宽容差、调整目标速比或更换齿轮。',
+    });
+  }
+
+  res.json({
+    ...base,
+    feasible: true,
+    reason: 'ok',
+    best: serializeLayoutBest(plan.best),
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`齿轮组选配服务已启动： http://localhost:${PORT}`);
   console.log(`  单台选配： http://localhost:${PORT}/`);
@@ -465,4 +570,5 @@ app.listen(PORT, () => {
   console.log(`  缺齿补货： http://localhost:${PORT}/procure`);
   console.log(`  双档换速： http://localhost:${PORT}/dual-speed`);
   console.log(`  带载安全： http://localhost:${PORT}/torque`);
+  console.log(`  轴位装配： http://localhost:${PORT}/layout`);
 });

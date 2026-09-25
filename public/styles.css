@@ -308,3 +308,20 @@ table.torque-table th, table.torque-table td { text-align: left; vertical-align:
   font-size: 11px;
   padding: 0 6px;
 }
+
+/* ---------------- 轴位装配 ---------------- */
+
+.axis-grid-head,
+.axis-row {
+  display: grid;
+  grid-template-columns: 64px 1fr 44px;
+  gap: 10px;
+  align-items: center;
+}
+.axis-grid-head {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.axis-row { margin-bottom: 8px; }
+.axis-label { font-size: 14px; font-weight: 600; }

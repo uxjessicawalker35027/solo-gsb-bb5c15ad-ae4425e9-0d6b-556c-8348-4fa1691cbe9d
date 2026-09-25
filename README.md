@@ -30,6 +30,13 @@
 不用原搜索的规范化级序去重，也不以 300 条截断结果代替完整候选；
 返回所有速比与载荷均达标方案的总数与前 300 条，无解时区分“速比无解”与“全部超载”。
 
+另支持**轴位装配**：输入 2～4 个沿直线依次排列的**轴心整数坐标**与正整数**模数**，
+相邻轴间各装一级传动（中间轴同轴固定前级从动轮与后级主动轮），
+每级啮合必须满足 **2×轴距 = 模数×(主动齿数+从动齿数)**，每枚齿轮全程只用一次。
+系统先对每级穷举满足轴距的有向配对，再在不复用齿轮下完整组合，
+以精确分数校核总速比与相对误差，按“误差最小 → 齿轮编号自然序”选出唯一最佳方案，
+返回**达标方案总数**与**逐轴安装明细**；无解时区分“无可啮合装配”与“可装配但速比不达标”。
+
 ## 一键启动（Docker Compose，自动安装依赖并构建）
 
 ```bash
@@ -45,6 +52,7 @@ docker compose up --build
 | 缺齿补货采购建议（2 台） | **http://localhost:3000/procure**（或 `/procure.html`） |
 | 双档换速（固定一级 + 换装一级） | **http://localhost:3000/dual-speed**（或 `/dual-speed.html`） |
 | 带载安全选配（扭矩校核） | **http://localhost:3000/torque**（或 `/torque.html`） |
+| 轴位装配（轴距 + 模数约束） | **http://localhost:3000/layout**（或 `/layout.html`） |
 
 后台运行可用 `docker compose up --build -d`，停止用 `docker compose down`。
 
@@ -59,7 +67,7 @@ npm start
 
 访问 http://localhost:3000 ，批量装配页 http://localhost:3000/batch ，
 缺齿补货页 http://localhost:3000/procure ，双档换速页 http://localhost:3000/dual-speed ，
-带载安全选配页 http://localhost:3000/torque 。
+带载安全选配页 http://localhost:3000/torque ，轴位装配页 http://localhost:3000/layout 。
 
 ## 必要配置（环境变量）
 
@@ -68,10 +76,10 @@ npm start
 | `PORT` | 容器内服务监听端口（一般无需修改） | `3000` |
 | `APP_PORT` | Compose 映射到宿主机的端口，按需覆盖，例如 `APP_PORT=8080 docker compose up --build` | `3000` |
 
-两个变量控制同一服务端口，五个页面共用；例如改用宿主机 8080 端口后，访问
+两个变量控制同一服务端口，六个页面共用；例如改用宿主机 8080 端口后，访问
 http://localhost:8080 （单台）、http://localhost:8080/batch （批量）、
-http://localhost:8080/procure （缺齿补货）、http://localhost:8080/dual-speed （双档换速）
-与 http://localhost:8080/torque （带载安全）：
+http://localhost:8080/procure （缺齿补货）、http://localhost:8080/dual-speed （双档换速）、
+http://localhost:8080/torque （带载安全）与 http://localhost:8080/layout （轴位装配）：
 
 ```bash
 APP_PORT=8080 docker compose up --build
@@ -197,6 +205,40 @@ APP_PORT=8080 docker compose up --build
 仅展示前 300 条（`truncated: true` 表示已截断，但 `total` 为完整总数）：
 **级数最少 → 速比相对误差最小 → 各级 (主动轮编号, 从动轮编号) 序列自然序**
 （比较使用实际级次顺序；`G2` 排在 `G10` 之前）。
+
+## 使用说明 — 轴位装配
+
+1. 在顶部导航进入 **轴位装配**（`/layout`）。
+2. 录入 **2～4 个轴心整数坐标**（沿直线依次排列，即传动链 轴1 → 轴2 → … → 轴N），
+   并填写正整数**模数**；相邻轴间各装一级传动，共 N−1 级（1～3 级）。
+3. 目标参数沿用单台页：填写**目标输出转速比**与**允许相对误差**。
+4. 录入 2～12 枚现有齿轮（编号唯一、正整数齿数，规则同单台页），或点“填入示例”。
+5. 点击“开始轴位装配”，系统先对每级求出满足
+   **2×轴距 = 模数×(主动齿数+从动齿数)** 的全部有向配对（轴距 = 相邻轴心坐标之差的绝对值），
+   再在**每枚齿轮全程只用一次**的约束下按级完整组合，
+   以精确分数（BigInt）校核每组装配的总速比与相对误差。
+6. 结果区先给出统计：**可啮合装配总数**（不考虑速比）与**速比达标方案总数**；
+   最佳方案（相对误差最小 → 各级 (主动,从动) 齿轮编号自然序）展示：
+   - **各级传动**：级次、轴区间（坐标）、轴距、所需齿数和、主动/从动轮与本级速比；
+   - **逐轴安装明细**：每根轴的轴心坐标与同轴固定的齿轮
+     （首轴仅第 1 级主动轮，末轴仅末级从动轮，中间轴为前级从动轮 + 后级主动轮）。
+7. **无解时明确区分两类原因**：
+   - **无可啮合装配**（`reason: "no-assembly"`）：某一级没有任何满足轴距公式的齿轮对
+     （提示中指出具体级与轴距），或各级配对无法在不复用齿轮的前提下同时装齐；
+   - **可装配但速比不达标**（`reason: "ratio"`）：存在可啮合装配（提示中给出总数），
+     但全部实际总速比的相对误差均超出允许范围。
+
+### 轴位装配的判定与择优
+
+- 每级可啮合条件：**2×轴距 = 模数 × (主动齿数 + 从动齿数)**，
+  即 2×轴距必须能被模数整除，且商（所需齿数和）能由两枚不同齿轮的齿数凑出；
+  每级两个朝向（谁主动/谁从动）都参与枚举。
+- 级数由轴数唯一确定（N 根轴 → N−1 级），级与轴区间一一对应，不做级次重排。
+- 总速比 = 各级速比之积，相对误差 = |实际 − 目标| / 目标，全程精确分数比较，
+  达标条件：相对误差 ≤ 容差（与其他页面完全一致）。
+- 达标方案总数为完整枚举结果（不截断）；最佳方案按
+  **相对误差最小 → 各级 (主动轮编号, 从动轮编号) 序列自然序** 唯一确定
+  （`G2` 排在 `G10` 之前）。
 
 ## HTTP 接口
 
@@ -351,6 +393,51 @@ APP_PORT=8080 docker compose up --build
 - 所有扭矩比较以整数分数（BigInt）完成，无浮点误差；承受扭矩为分数时
   以约分分数 `num/den` 与小数同时返回（如 `1000/3 ≈ 333.3333333333`）。
 
+### `POST /api/layout`（轴位装配）
+
+```json
+{
+  "axes": [0, 50, 110],
+  "module": 2,
+  "target": "1/6",
+  "tolerance": "5%",
+  "gears": [
+    { "id": "G1", "teeth": 10 },
+    { "id": "G2", "teeth": 40 },
+    { "id": "G3", "teeth": 20 },
+    { "id": "G4", "teeth": 30 },
+    { "id": "G5", "teeth": 24 },
+    { "id": "G6", "teeth": 36 },
+    { "id": "G7", "teeth": 15 },
+    { "id": "G8", "teeth": 45 }
+  ]
+}
+```
+
+- `axes` 必须 **2～4** 个整数坐标（沿直线依次排列，定义传动链 轴1 → … → 轴N；
+  相邻坐标之差的绝对值即该级轴距）；`module` 为**正整数**模数；
+  `gears` 为 **2～12** 枚现有齿轮，`target` / `tolerance` 规则与 `/api/search` 完全一致。
+- 相邻轴间各装一级传动（共 N−1 级），每级必须满足
+  `2×轴距 = 模数 × (主动齿数 + 从动齿数)`；每枚齿轮全程至多使用一次；
+  中间轴同轴固定前级从动轮与后级主动轮。
+- 返回公共字段：
+  - `stages` / `distances[]` / `teethSums[]`：级数、各级轴距与所需齿数和
+    （2×轴距不能被模数整除时该级为 `null`）；
+  - `stagePairCounts[]`：各级满足轴距的有向配对数（诊断用）；
+  - `assemblyCount`：**可啮合装配总数**（每级满足轴距且齿轮不复用，不考虑速比）；
+  - `total`：**速比达标方案总数**（完整枚举，不截断）。
+- 有解（`feasible: true`、`reason: "ok"`）时返回 `best`：
+  - `ratio` / `error` / `errorPercent`：最佳方案的实际总速比与相对误差；
+  - `stages[]`：逐级明细（轴区间坐标、轴距、所需齿数和、主动/从动轮、本级速比）；
+  - `axes[]`：**逐轴安装明细**——每根轴的坐标与同轴固定的齿轮
+    （`role` 为 `drive`/`driven`，`stage` 为所属级次）。
+- 无解（`feasible: false`、`best: null`）时区分：
+  - `reason: "no-assembly"`：**无可啮合装配**（`assemblyCount: 0`，
+    `message` 指出没有可啮合配对的级及其轴距）；
+  - `reason: "ratio"`：**可装配但速比不达标**（`assemblyCount > 0`、`total: 0`）。
+- 最佳方案择优：相对误差最小 → 各级 (主动轮编号, 从动轮编号) 序列自然序；
+  全部判定以精确分数（BigInt）完成，无浮点误差。
+
 ## 计算与排序规则
 
 - 每级转速比 = 主动轮齿数 / 从动轮齿数；总速比 = 各级速比之积（全程约分分数）。
@@ -373,25 +460,28 @@ APP_PORT=8080 docker compose up --build
 ```
 .
 ├── Dockerfile              # 多平台 Node 20 Alpine 镜像，构建时安装依赖
-├── docker-compose.yml      # 一键启动服务（五个页面同端口）
+├── docker-compose.yml      # 一键启动服务（六个页面同端口）
 ├── package.json
 ├── src
-│   ├── server.js           # Express 服务：静态页面 + /api/search + /api/batch + /api/procure + /api/dual-speed + /api/torque
+│   ├── server.js           # Express 服务：静态页面 + /api/search + /api/batch + /api/procure + /api/dual-speed + /api/torque + /api/layout
 │   ├── search.js           # 精确分数搜索算法（BigInt）：完整枚举与单台搜索
 │   ├── batch.js            # 批量装配：按集合留优 + 互不冲突组合的分支限界搜索
 │   ├── procure.js          # 缺齿补货：枚举可购子集，复用批量装配的候选分配与规则
 │   ├── dual.js             # 双档换速：共用固定第一级 + 按档换装第二级的完整枚举与择优
-│   └── torque.js           # 带载安全：速比配对组 × 全部级次顺序的无损传动扭矩校核
+│   ├── torque.js           # 带载安全：速比配对组 × 全部级次顺序的无损传动扭矩校核
+│   └── layout.js           # 轴位装配：轴距/模数约束下的有向配对枚举与逐轴安装明细
 └── public
     ├── index.html          # 单台选配页面
     ├── batch.html          # 批量装配页面（/batch）
     ├── procure.html        # 缺齿补货采购建议页面（/procure）
     ├── dual-speed.html     # 双档换速页面（/dual-speed）
     ├── torque.html         # 带载安全选配页面（/torque）
+    ├── layout.html         # 轴位装配页面（/layout）
     ├── styles.css
     ├── app.js              # 单台页脚本
     ├── batch.js            # 批量页脚本
     ├── procure.js          # 补货页脚本
     ├── dual-speed.js       # 双档换速页脚本
-    └── torque.js           # 带载安全页脚本
+    ├── torque.js           # 带载安全页脚本
+    └── layout.js           # 轴位装配页脚本
 ```
