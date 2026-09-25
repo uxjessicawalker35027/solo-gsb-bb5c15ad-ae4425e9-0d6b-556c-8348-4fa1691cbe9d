@@ -20,6 +20,14 @@ const {
 } = require('./procure');
 const { planDualSpeed, MIN_GEARS: MIN_DUAL_GEARS } = require('./dual');
 const { planTorque, validateTorqueGears, parsePositiveInt, MAX_TORQUE } = require('./torque');
+const {
+  planLayout,
+  parseAxes,
+  parseModule,
+  MIN_AXES,
+  MAX_AXES,
+  MAX_MODULE,
+} = require('./layout');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -45,6 +53,11 @@ app.get('/dual-speed', (_req, res) => {
 /** 友好访问带载安全选配页：/torque → /torque.html */
 app.get('/torque', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'torque.html'));
+});
+
+/** 友好访问轴位装配页：/layout → /layout.html */
+app.get('/layout', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'layout.html'));
 });
 
 /** BigInt 分数安全转为有限小数（用于前端展示） */
@@ -107,6 +120,44 @@ function serializeTorqueSolution(r) {
       driven: serializeTorqueGear(p.driven),
       stageRatio: serializeFrac(p.stageRatio),
     })),
+  };
+}
+
+/** 轴位装配：逐轴安装的单个齿轮位（含同轴固定的角色说明） */
+function serializeShaftMount(m) {
+  return {
+    stage: m.stage,
+    role: m.role,
+    gear: { id: m.gear.id, teeth: m.gear.teeth },
+  };
+}
+
+/** 轴位装配方案：逐级啮合明细 + 逐轴安装明细 */
+function serializeLayoutSolution(r) {
+  return {
+    stages: r.stages,
+    ratio: serializeFrac(r.ratio),
+    error: serializeFrac(r.error),
+    errorPercent: fracToDecimal({ num: r.error.num * 100n, den: r.error.den }, 6),
+    pairs: r.pairs.map((p) => ({
+      stage: p.stage,
+      fromAxis: p.fromAxis,
+      toAxis: p.toAxis,
+      dx: p.dx,
+      dy: p.dy,
+      axisDistance: p.axisDistance,
+      requiredTeethSum: p.requiredTeethSum,
+      drive: p.drive,
+      driven: p.driven,
+      stageRatio: serializeFrac(p.stageRatio),
+    })),
+    shafts: r.shafts.map((s) => ({
+      axis: s.axis,
+      x: s.x,
+      y: s.y,
+      mounts: s.mounts.map(serializeShaftMount),
+    })),
+    unusedGears: r.unusedGears,
   };
 }
 
@@ -458,6 +509,142 @@ app.post('/api/torque', (req, res) => {
   });
 });
 
+app.post('/api/layout', (req, res) => {
+  const body = req.body || {};
+
+  // 轴心：2～4 个沿直线依次排列的整数坐标点
+  const axesChecked = parseAxes(body.axes);
+  if (!axesChecked.ok) return res.status(400).json({ error: axesChecked.error });
+  const axes = axesChecked.axes;
+
+  // 模数：统一正整数
+  const moduleChecked = parseModule(body.module);
+  if (!moduleChecked.ok) return res.status(400).json({ error: moduleChecked.error });
+  const mod = moduleChecked.value;
+
+  const target = parseTarget(String(body.target ?? ''));
+  if (!target) {
+    return res.status(400).json({ error: '目标输出转速比格式不正确：请输入正数（如 0.0833、1/12）' });
+  }
+
+  const tolerance = parseTolerance(String(body.tolerance ?? ''));
+  if (!tolerance) {
+    return res.status(400).json({ error: '允许相对误差格式不正确：请输入非负数（如 0.05 或 5%）' });
+  }
+
+  // 现有齿轮：2～12 枚，沿用统一校验；轴数 n 需要恰好 2(n-1) 枚不同实物
+  const stageCount = axes.length - 1;
+  const minGears = 2 * stageCount;
+  const checked = validateGears(body.gears, { label: '齿轮', min: 2, max: MAX_GEARS });
+  if (!checked.ok) return res.status(400).json({ error: checked.error });
+  if (checked.gears.length < minGears) {
+    return res.status(400).json({
+      error: `${axes.length} 个轴共 ${stageCount} 级传动，至少需要 ${minGears} 枚齿轮（当前 ${checked.gears.length} 枚）`,
+    });
+  }
+
+  // 穷举每级满足 2×轴距=模数×(主+从) 的有向配对并跨级组合，精确分数校核总速比
+  const plan = planLayout(checked.gears, axes, mod, target, tolerance);
+
+  const geometryStages = plan.stages.map((st) => {
+    let meshingReason;
+    if (st.distance === null) {
+      meshingReason = '轴距不是整数，整数模数与整数齿数无法满足 2×轴距=模数×齿数和';
+    } else if (st.requiredSum === null) {
+      meshingReason = `2×轴距=${2 * st.distance} 不能被模数 ${mod} 整除（或齿数和 < 2），无整数齿数解`;
+    }
+    return {
+      stage: st.stage,
+      dx: st.dx,
+      dy: st.dy,
+      distanceSquared: st.dx * st.dx + st.dy * st.dy,
+      distance: st.distance,
+      requiredTeethSum: st.requiredSum,
+      meshingPossible: st.requiredSum !== null,
+      meshingReason,
+      candidateCount: plan.candidateCounts[st.stage - 1],
+    };
+  });
+
+  const base = {
+    axes,
+    module: mod,
+    stageCount,
+    target: serializeFrac(target),
+    tolerance: serializeFrac(tolerance),
+    stages: geometryStages,
+    gearCount: checked.gears.length,
+    assemblyCount: plan.assemblyCount,
+  };
+
+  // 第一类无解：几何/齿数层面就不存在完整可啮合装配
+  const impossibleStage = geometryStages.find((st) => !st.meshingPossible);
+  if (impossibleStage) {
+    return res.json({
+      ...base,
+      feasible: false,
+      reason: 'meshing',
+      total: 0,
+      best: null,
+      message:
+        `无可啮合装配：第 ${impossibleStage.stage} 级（第 ${impossibleStage.stage}～${impossibleStage.stage + 1} 轴）` +
+        `${impossibleStage.meshingReason}。请调整轴心坐标或模数。`,
+    });
+  }
+
+  const emptyStage = geometryStages.find((st) => st.candidateCount === 0);
+  if (emptyStage) {
+    return res.json({
+      ...base,
+      feasible: false,
+      reason: 'meshing',
+      total: 0,
+      best: null,
+      message:
+        `无可啮合装配：第 ${emptyStage.stage} 级（第 ${emptyStage.stage}～${emptyStage.stage + 1} 轴）要求主动齿数 + 从动齿数 = ` +
+        `${emptyStage.requiredTeethSum}，但现有齿轮中不存在满足该齿数和的两枚齿轮。` +
+        '请补充齿数互补的齿轮，或调整轴位 / 模数。',
+    });
+  }
+
+  if (plan.assemblyCount === 0) {
+    return res.json({
+      ...base,
+      feasible: false,
+      reason: 'meshing',
+      total: 0,
+      best: null,
+      message:
+        '无可啮合装配：虽然每级各自存在满足轴距的齿轮对，但跨级组合无法做到每枚齿轮全程只用一次。' +
+        '请增加齿轮（补足齿数互补的型号）或调整轴位、模数。',
+    });
+  }
+
+  // 第二类无解：存在完整可啮合装配，但全部速比相对误差超出容差
+  if (plan.total === 0) {
+    return res.json({
+      ...base,
+      feasible: false,
+      reason: 'ratio',
+      total: 0,
+      best: null,
+      closest: serializeLayoutSolution(plan.closest),
+      message:
+        `可装配但速比不达标：共枚举 ${plan.assemblyCount} 种满足全部轴距的完整装配，` +
+        '其实际总速比的相对误差均超出允许范围。下列为误差最小的一种（不达标，仅供参考）；' +
+        '可尝试放宽容差、调整目标速比、轴位 / 模数或更换齿轮。',
+    });
+  }
+
+  res.json({
+    ...base,
+    feasible: true,
+    reason: 'ok',
+    total: plan.total,
+    best: serializeLayoutSolution(plan.best),
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`齿轮组选配服务已启动： http://localhost:${PORT}`);
   console.log(`  单台选配： http://localhost:${PORT}/`);
@@ -465,4 +652,5 @@ app.listen(PORT, () => {
   console.log(`  缺齿补货： http://localhost:${PORT}/procure`);
   console.log(`  双档换速： http://localhost:${PORT}/dual-speed`);
   console.log(`  带载安全： http://localhost:${PORT}/torque`);
+  console.log(`  轴位装配： http://localhost:${PORT}/layout`);
 });

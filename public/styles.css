@@ -308,3 +308,35 @@ table.torque-table th, table.torque-table td { text-align: left; vertical-align:
   font-size: 11px;
   padding: 0 6px;
 }
+
+/* ---------------- 轴位装配 ---------------- */
+
+.axis-grid-head,
+.axis-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1.6fr 44px;
+  gap: 10px;
+  align-items: center;
+}
+.axis-grid-head {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.axis-row { margin-bottom: 8px; }
+.axis-index { font-size: 13px; font-weight: 600; color: var(--brand-dark); white-space: nowrap; }
+@media (max-width: 640px) {
+  .axis-grid-head,
+  .axis-row { grid-template-columns: 1fr 1fr; }
+}
+
+.meshing-no { color: var(--danger); font-weight: 600; }
+
+.shafts-panel { margin-top: 16px; }
+table.shaft-table th, table.shaft-table td { text-align: left; vertical-align: middle; }
+.mount-cell { min-width: 240px; }
+.mount-item { padding: 2px 0; }
+.mount-item + .mount-item { border-top: 1px dashed var(--line); }
+
+.solution.best-warn { border-color: #e5c07b; background: var(--warn-bg); }
+.badge.badge-warn { background: var(--warn); }
